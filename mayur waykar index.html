@@ -1,1 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Capture Photo & Location</title>
+<style>
+  body { font-family: system-ui, -apple-system, Roboto, "Segoe UI", Arial; padding: 18px; max-width: 800px; margin: auto; }
+  a.button { display:inline-block; padding:10px 16px; background:#0066ff; color:#fff; border-radius:6px; text-decoration:none; }
+  video, canvas, img { max-width:100%; border-radius:8px; margin-top:12px; }
+  .meta { margin-top:10px; font-size:0.95rem; color:#222; }
+  .controls { margin-top:12px; }
+  .small { font-size:0.9rem; color:#555; }
+  pre { background:#f7f7f7; padding:10px; border-radius:6px; overflow:auto; }
+</style>
+</head>
+<body>
+  <h2>Capture Photo & Location</h2>
+  <p class="small">Click the link below, allow camera and location access when prompted. Works on desktop and mobile (HTTPS required).</p>
+
+  <a href="#" id="captureLink" class="button">Capture Photo & Location</a>
+
+  <div id="liveArea" style="display:none;">
+    <div class="controls">
+      <video id="video" autoplay playsinline></video>
+      <div>
+        <button id="snapBtn" class="button" style="background:#0a8">Take Photo</button>
+        <button id="stopBtn" class="button" style="background:#f33">Stop Camera</button>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="canvas" style="display:none;"></canvas>
+
+  <div id="result" style="display:none;">
+    <h3>Captured Photo</h3>
+    <img id="photo" alt="Captured photo" />
+    <div class="meta" id="locationInfo"></div>
+    <div style="margin-top:8px;">
+      <a id="downloadPhoto" class="button" download="photo.png">Download Photo</a>
+      <a id="downloadMeta" class="button" download="location.json" style="background:#444">Download Location (JSON)</a>
+    </div>
+  </div>
+
+  <div id="messages" style="margin-top:14px;"></div>
+
+<script>
+(async function(){
+  const captureLink = document.getElementById('captureLink');
+  const liveArea = document.getElementById('liveArea');
+  const video = document.getElementById('video');
+  const snapBtn = document.getElementById('snapBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const canvas = document.getElementById('canvas');
+  const photo = document.getElementById('photo');
+  const result = document.getElementById('result');
+  const locationInfo = document.getElementById('locationInfo');
+  const downloadPhoto = document.getElementById('downloadPhoto');
+  const downloadMeta = document.getElementById('downloadMeta');
+  const messages = document.getElementById('messages');
+
+  let stream = null;
+  let lastPosition = null;
+
+  function log(msg, isError=false){
+    messages.innerHTML = '<div style="color:' + (isError? '#c33':'#055') + ';">' + msg + '</div>';
+  }
+
+  // Helper: get geolocation (returns Promise)
+  function getLocation(options = { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }) {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) return reject(new Error('Geolocation not supported.'));
+      navigator.geolocation.getCurrentPosition(resolve, reject, options);
+    });
+  }
+
+  // Start camera (prefers rear on phones)
+  async function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Camera API not supported in this browser.');
+    }
+    // Prefer environment-facing camera on mobile
+    const constraints = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+    // show live area
+    liveArea.style.display = 'block';
+  }
+
+  async function stopCamera() {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+    liveArea.style.display = 'none';
+  }
+
+  // Take snapshot from video element
+  function takeSnapshot() {
+    const w = video.videoWidth || 640;
+    const h = video.videoHeight || 480;
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    // Mirror for user-facing camera? Not needed for environment camera
+    ctx.drawImage(video, 0, 0, w, h);
+    // Return dataURL (PNG)
+    return canvas.toDataURL('image/png');
+  }
+
+  // Click handler for the link
+  captureLink.addEventListener('click', async (e) => {
+    e.preventDefault();
+    result.style.display = 'none';
+    messages.innerHTML = '';
+    try {
+      log('Requesting camera access...');
+      await startCamera();
+      // Try to get a (fast) location now in background (doesn't block camera)
+      log('Requesting location permission (may prompt)...');
+      // We ask for location once to warm permissions; store but continue to allow snapshot first.
+      getLocation().then(pos => {
+        lastPosition = pos;
+        log('Location obtained. You can take the photo now.');
+      }).catch(err => {
+        log('Location not obtained (permission denied or error). You can still take a photo, but location will be missing.', true);
+      });
+    } catch (err) {
+      log('Error: ' + err.message, true);
+    }
+  });
+
+  // Snap button
+  snapBtn.addEventListener('click', async () => {
+    messages.innerHTML = '';
+    try {
+      if (!stream) throw new Error('Camera not active.');
+      const dataUrl = takeSnapshot();
+      // If we haven't obtained location yet, try to get it now (this may prompt)
+      try {
+        if (!lastPosition) {
+          log('Getting location (may prompt)...');
+          lastPosition = await getLocation();
+        } else {
+          log('Using previously obtained location.');
+        }
+      } catch (locErr) {
+        console.warn('Location error:', locErr);
+      }
+
+      // show photo
+      photo.src = dataUrl;
+      result.style.display = 'block';
+
+      // prepare download link for photo
+      downloadPhoto.href = dataUrl;
+
+      // prepare metadata JSON
+      const meta = {
+        timestamp: new Date().toISOString(),
+        location: lastPosition ? {
+          latitude: lastPosition.coords.latitude,
+          longitude: lastPosition.coords.longitude,
+          accuracy_m: lastPosition.coords.accuracy,
+          altitude: lastPosition.coords.altitude,
+          altitudeAccuracy: lastPosition.coords.altitudeAccuracy,
+          heading: lastPosition.coords.heading,
+          speed: lastPosition.coords.speed
+        } : null
+      };
+      locationInfo.innerHTML = meta.location
+        ? `Latitude: ${meta.location.latitude.toFixed(6)}, Longitude: ${meta.location.longitude.toFixed(6)} <br> Accuracy: ${meta.location.accuracy_m} m <br> Time: ${meta.timestamp}`
+        : 'Location not available or permission denied.';
+      // create blob for download
+      const metaBlob = new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' });
+      downloadMeta.href = URL.createObjectURL(metaBlob);
+
+      log('Photo captured. Use the download buttons if you want to save.');
+    } catch (err) {
+      log('Error capturing photo or location: ' + err.message, true);
+    }
+  });
+
+  stopBtn.addEventListener('click', async () => {
+    await stopCamera();
+    log('Camera stopped.');
+  });
+
+  // Clean up camera when leaving page or closing tab
+  window.addEventListener('beforeunload', () => {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+  });
+})();
+</script>
+</body>
+</html>
 
